@@ -4,6 +4,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+# ===================================================================
+# PART 1: CUSTOM TECHNICAL INDICATOR FUNCTIONS
+# ===================================================================
+
 def calculate_rsi(data, period=14):
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
@@ -12,7 +16,12 @@ def calculate_rsi(data, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
+# ===================================================================
+# PART 2: THE "DYNAMIC RSI" STRATEGY
+# ===================================================================
+
 def dynamic_rsi_strategy(df):
+    """Generates adaptive signals based on the market trend (regime)."""
     df['RSI'] = calculate_rsi(df['Close'])
     df['SMA_200'] = df['Close'].rolling(window=200).mean()
     df['regime'] = np.where(df['Close'] > df['SMA_200'], 'bull', 'bear')
@@ -26,29 +35,29 @@ def dynamic_rsi_strategy(df):
     
     return df
 
+# ===================================================================
+# PART 3: THE BACKTESTING ENGINE
+# ===================================================================
+
 def backtest_strategy(ticker, strategy_function, start_date, end_date, initial_capital=10000):
+    """A powerful backtesting engine that simulates a trading strategy and provides detailed reports."""
     print(f"--- Running backtest for {strategy_function.__name__} on {ticker} ---")
     
-    df = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True, progress=False)
+    df = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
     if df.empty:
-        print(f"No data downloaded for {ticker}. Skipping.")
-        return
+        print(f"No data downloaded for {ticker}. Exiting."); return
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     df = strategy_function(df)
     df.dropna(inplace=True)
-    
-    if df.empty:
-        print(f"Not enough data to run strategy for {ticker} after indicator calculation. Skipping.")
-        return
 
     position = 0
     equity = [initial_capital]
     trades = []
     current_trade = {}
 
-    for i in range(len(df) - 1):
+    for i in range(len(df) - 1): # Loop to the second to last row
         current_price = df['Close'].iloc[i]
         
         if position == 1 and df['regime'].iloc[i] == 'bull' and df['RSI'].iloc[i] > 75:
@@ -91,7 +100,7 @@ def backtest_strategy(ticker, strategy_function, start_date, end_date, initial_c
                 trade_log['type'] == 'Long',
                 (trade_log['exit_price'] - trade_log['entry_price']) / trade_log['entry_price'],
                 (trade_log['entry_price'] - trade_log['exit_price']) / trade_log['entry_price']
-            )
+            ) * 100
             win_rate = (trade_log['pnl_pct'] > 0).mean() * 100 if len(trade_log) > 0 else 0
             avg_win = trade_log[trade_log['pnl_pct'] > 0]['pnl_pct'].mean() * 100 if len(trade_log[trade_log['pnl_pct'] > 0]) > 0 else 0
             avg_loss = trade_log[trade_log['pnl_pct'] < 0]['pnl_pct'].mean() * 100 if len(trade_log[trade_log['pnl_pct'] < 0]) > 0 else 0
@@ -117,7 +126,10 @@ def backtest_strategy(ticker, strategy_function, start_date, end_date, initial_c
     
     if not trade_log.empty:
         print("--- TRADE LOG ---")
-        print(trade_log.to_string())
+        print_log = trade_log.copy()
+        print_log['entry_date'] = print_log['entry_date'].dt.strftime('%Y-%m-%d')
+        print_log['exit_date'] = print_log['exit_date'].dt.strftime('%Y-%m-%d')
+        print(print_log[['type', 'entry_date', 'entry_price', 'exit_date', 'exit_price', 'pnl_pct']].round(2).to_string())
     
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(16, 15), sharex=True, gridspec_kw={'height_ratios': [3, 1, 2]})
     fig.suptitle(f'Backtest Results: {strategy_function.__name__} on {ticker}', fontsize=20)
@@ -126,15 +138,14 @@ def backtest_strategy(ticker, strategy_function, start_date, end_date, initial_c
     ax1.plot(df.index, df['SMA_200'], label='200-Day MA (Trend Filter)', color='red', linestyle='--')
 
     if not trade_log.empty:
+        # <<< THE FIX: Ensure dates are proper datetime objects for plotting >>>
         buy_signals = trade_log[trade_log['type'] == 'Long']
         sell_signals = trade_log[trade_log['type'] == 'Short']
-        ax1.plot(buy_signals['entry_date'], buy_signals['entry_price'], '^', markersize=10, color='g', label='Enter Long')
-        ax1.plot(sell_signals['entry_date'], sell_signals['entry_price'], 'v', markersize=10, color='r', label='Enter Short')
+        ax1.plot(pd.to_datetime(buy_signals['entry_date']), buy_signals['entry_price'], '^', markersize=10, color='g', label='Enter Long')
+        ax1.plot(pd.to_datetime(sell_signals['entry_date']), sell_signals['entry_price'], 'v', markersize=10, color='r', label='Enter Short')
 
     ax1.set_title('Price Chart with Trades', fontsize=16)
-    ax1.set_ylabel('Price (USD)')
-    ax1.grid(True)
-    ax1.legend()
+    ax1.set_ylabel('Price (USD)'); ax1.grid(True); ax1.legend()
     
     ax2.plot(df.index, df['RSI'], label='RSI', color='purple')
     ax2.axhline(75, color='darkorange', linestyle='--', alpha=0.7); ax2.axhline(25, color='darkorange', linestyle='--', alpha=0.7)
@@ -157,26 +168,24 @@ def backtest_strategy(ticker, strategy_function, start_date, end_date, initial_c
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.97]); plt.show()
 
-if __name__ == '__main__':
-    
-    tickers_to_test = [
-    # Precious Metals
-    'GC=F',  # Gold
-    'SI=F',  # Silver
-    'PL=F',  # Platinum
-    'PA=F',  # Palladium
+# ===================================================================
+# PART 4: RUN THE BACKTEST
+# ===================================================================
 
-    # Energy
-    'CL=F',  # Crude Oil
-    'NG=F',  # Natural Gas
-    'RB=F',  # RBOB Gasoline
-    
-    # Industrial Metals
-    'HG=F',  # Copper
-]
+if __name__ == '__main__':
+    # --- Create your list of tickers to test here ---
+    tickers_to_test = [
+        'AAPL',
+        'MSFT',
+        'GOOGL',
+        'AMZN',
+        'TSLA',
+        'RELIANCE.NS'
+    ]
     
     START_DATE = '2024-01-01'
     END_DATE = datetime.now().strftime('%Y-%m-%d')
     
+    # --- Loop through each ticker and run the backtest ---
     for ticker in tickers_to_test:
         backtest_strategy(ticker, dynamic_rsi_strategy, START_DATE, END_DATE)
